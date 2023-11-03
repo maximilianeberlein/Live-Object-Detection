@@ -1,4 +1,4 @@
-path: ../git/OIDv6_ToolKit_Download_Open_Images_Support_Yolo_Format/OID/Dataset/
+path: ../git/husky_alascom/OIDv6_ToolKit_Download_Open_Images_Support_Yolo_Format/OID/Dataset/
 train: train/Class1_Class2/images
 val: validation/Class1_Class2/images
 test: #optional
