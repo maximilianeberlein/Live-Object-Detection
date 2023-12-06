@@ -14,12 +14,13 @@ import json
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import imageio
-
+from urllib.parse import urlparse
+import numpy as np
+import csv
+import os
 # Load default configuration from JSON file
 # "source": "rtsp://root:pass@192.168.1.190/axis-media/media.amp",
 parameters_file = Path("parameters.json")
-attach_image = True
-attach_video = False
 
 with open(parameters_file, "r") as f:
     parameters = json.load(f)
@@ -30,7 +31,11 @@ video_record_in_sec = parameters["video_length"]
 class_ids = parameters["class_ids"]
 mail_pause_in_sec = parameters["mail_pause_in_sec"]
 time_interval_for_enough_frame_sightings_in_sec = parameters["time_interval_for_enough_frame_sightings_in_sec"]
+record_plot = parameters["record_plot"]
 
+detected_class_ids_list = []
+total_times_list = []
+email_sent_flags = [] 
 
 def send_mail(mail_time, class_name, media_attachment):
 
@@ -91,13 +96,15 @@ def prepare_mail_attachments(r_list, class_id):
         media_attachment = None
 
     send_mail(mail_time, class_name, media_attachment)
-        
-
 
 def send_email_wrapper(args):
     prepare_mail_attachments(*args)
 
 def start_stream():
+
+    global detected_class_ids_list
+    global total_times_list
+    global email_sent_flags
 
     results_list = {class_id: [] for class_id in class_ids}
     model = YOLO(parameters["yolo_model_path"])
@@ -106,10 +113,18 @@ def start_stream():
     time_first_detection = {class_id: 0 for class_id in class_ids}
     save_frames_for_video = {class_id: False for class_id in class_ids}
 
-    results = model.predict(parameters["source"], stream=True, save=False, show=True, conf=parameters["confidence_level"])
 
+    if record_plot:
+        if os.path.exists('plot_data.csv'):
+            with open('plot_data.csv', 'w', newline=''):
+                pass  # Empty block to truncate the file
+
+    results = model.predict(parameters["source"], stream=True, save=False, show=parameters["show_stream"], conf=parameters["confidence_level"])
+ 
     with ThreadPoolExecutor(max_workers=len(class_ids)) as executor:
         for r in results:
+            
+            email_flag = 0
             for class_id in class_ids:
                 if class_id in r.boxes.cls:
                     time_now = time()
@@ -125,6 +140,7 @@ def start_stream():
                         if count[class_id] >= email_trigger_count:
                             if mail_option == "Mail with Image Attachment" or mail_option == "Mail without Attachment":
                                 executor.submit(send_email_wrapper, [[r], class_id])
+                                email_flag = 1
                             elif mail_option == "Mail with Video Attachment":
                                 save_frames_for_video[class_id] = True
 
@@ -137,14 +153,34 @@ def start_stream():
                         else:
                             frames_to_save = results_list[class_id].copy()
                             executor.submit(send_email_wrapper, [frames_to_save, class_id])
+                            email_flag = 1
                             results_list[class_id].clear()  # Clear the list for the specific class_id
                             save_frames_for_video[class_id] = False
 
+            if record_plot:
+                email_sent_flags.append(email_flag)
+                detected_class_ids_list.append(np.array(r.boxes.cls))
+                total_times_list.append(time())
+        
+                # the frequency of data saving into csv file is arbitrarly and could be tuned
+                if len(detected_class_ids_list) % 25 == 0:
+                    # Save the array and total times to the same CSV file
+                    with open('plot_data.csv', 'a', newline='') as csvfile:
+                        csvwriter = csv.writer(csvfile)
+                        for detected_class_id, total_time, email_sent_flag in zip(detected_class_ids_list, total_times_list, email_sent_flags):
+                            csvwriter.writerow(detected_class_id.tolist() + [total_time, email_sent_flag])
+                    
+                    # Reset the lists
+                    detected_class_ids_list = []
+                    total_times_list = []
+                    email_sent_flags = []
+            
+def stop_actions():
+    with open('plot_data.csv', 'a', newline='') as csvfile:
+        csvwriter = csv.writer(csvfile)
+        for detected_class_id, total_time, email_sent_flag in zip(detected_class_ids_list, total_times_list, email_sent_flags):
+            csvwriter.writerow(detected_class_id.tolist() + [total_time, email_sent_flag])
+    
 
-
-
-start_stream()
-
-
-
-#mail_pause_sec !> mail_trigger_count
+if __name__ == "__main__":
+    start_stream()

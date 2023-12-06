@@ -3,16 +3,27 @@ from ultralytics import YOLO
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk  # Import the ttk module
+from tkinter import Checkbutton
 from tkinter.ttk import Combobox
-from tkinter import Label, Entry, Button, Listbox, Scrollbar, messagebox
+from tkinter import Label, Entry, Button, Listbox, Scrollbar, messagebox, Scale
 import os
 import subprocess
+import requests
+from requests.exceptions import RequestException
+from urllib.parse import urlparse
+import csv
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
+from collections import Counter
+import main_program
 
 def is_save_needed():
     # Check if any parameter has been changed
     try:
         error_label.config(text="")
         return (
+            show_stream_var.get() != config["show_stream"] or
+            record_plot_var.get() != config["record_plot"] or
             float(videolen_entry.get()) != config["video_length"] or
             float(confidence_entry.get()) != config["confidence_level"] or
             int(email_trigger_count_entry.get()) != config["email_trigger_count"] or
@@ -35,26 +46,84 @@ def start_program():
 
     start_button.config(state=tk.DISABLED)
     stop_button.config(state=tk.NORMAL)
+    #plot_button.config(state=tk.DISABLED)
+
     # Check if the script is already running
     if hasattr(start_program, "process") and start_program.process.poll() is None:
         messagebox.showinfo("Info", "The script is already running.")
         return
 
-    # Start the script
-    script_path = os.path.join(os.path.dirname(__file__), "main_program.py")
-    start_program.process = subprocess.Popen(["python3", script_path])
+    # Start the main_program.py
+    main_program_path = os.path.join(os.path.dirname(__file__), "main_program.py")
+    start_program.process = subprocess.Popen(["python3", main_program_path])
+
 
 # Function to stop the main_program.py
 def stop_program():
 
     start_button.config(state=tk.NORMAL)
     stop_button.config(state=tk.DISABLED)
+   # plot_button.config(state=tk.NORMAL)
     # Check if the script is running
     if hasattr(start_program, "process") and start_program.process.poll() is None:
+        main_program.stop_actions()
         start_program.process.terminate()
     else:
         messagebox.showinfo("Info", "The script is currently not running.")
 
+def make_plot():
+    plt.close('all')
+    model = YOLO(config["yolo_model_path"])
+    class_names_by_id = {int(class_id): class_name for class_id, class_name in model.names.items()}
+    csv_file_path = 'plot_data.csv'
+    data = []
+
+    with open(csv_file_path, 'r') as csvfile:
+        csvreader = csv.reader(csvfile)
+        for row in csvreader:
+            # Convert each value to float
+            row = [float(value) for value in row]
+            data.append(row)
+
+    class_counts_over_time = []
+    total_times = []  # Initialize with 0, as the first total_time is the time difference from the start
+    email_flags = []
+
+    for i in range(1, len(data)):
+        total_times.append(data[i][-2])  # Accumulate total_time
+        class_counts = Counter(data[i][:-2])  # Exclude the last two columns (email_flag and total_time)
+        class_counts_over_time.append(class_counts)
+        email_flags.append(data[i][-1])  # Last element is the email_flag
+
+    # Extract class IDs and their counts
+    class_ids = list(set(class_id for time_step_counts in class_counts_over_time for class_id in time_step_counts))
+    class_counts_by_class = {class_id: [counts[class_id] for counts in class_counts_over_time] for class_id in class_ids}
+
+    # Convert total_times to seconds
+    start_time = datetime.fromtimestamp(total_times[0])
+    total_times_seconds = [start_time + timedelta(seconds=time - total_times[0]) for time in total_times]
+
+    # Plot the sum of each class over time using accumulated total_time as the x-axis
+    plt.figure(figsize=(10, 6))
+
+    for class_id, counts_over_time in class_counts_by_class.items():
+        class_name = class_names_by_id.get(int(class_id), f'Class {int(class_id)}')  # Use class name if available, else use class ID
+        plt.plot(total_times_seconds, counts_over_time, label=class_name)
+
+    legend_text = False
+    for time_point, email_flag in zip(total_times_seconds, email_flags):
+        if email_flag == 1:
+            label = 'Email Sent' if email_flag == 1 and not legend_text else ''
+            plt.axvline(x=time_point, color='black', linestyle='--', alpha=0.5, label=label)
+            legend_text = True
+    
+    plt.gca().xaxis_date()
+    plt.gcf().autofmt_xdate()
+    plt.title('Number of Appearances of each Detected Class over Time')
+    plt.xlabel('Total Time (s)')
+    plt.ylabel('Number of Appearances')
+    plt.legend()
+    plt.show()
 
 def is_valid_class_ids(class_ids_str, class_id_list):
     try:
@@ -71,6 +140,7 @@ def save_config():
         email_trigger_count_val = int(email_trigger_count_entry.get())
         mail_pause_val = float(mail_pause_entry.get())
         time_interval_val = float(time_interval_entry.get())
+        mail_option = mail_option_combobox.get()
 
         if not (0.0 <= confidence_level_val <= 1.0):
             raise ValueError("Confidence Level must be between 0.0 and 1.0.")
@@ -87,7 +157,7 @@ def save_config():
         if time_interval_val < 0:
             raise ValueError("Time Interval must be a non-negative float.")
         
-        if videolen_val >= mail_pause_val:
+        if videolen_val >= mail_pause_val and mail_option == "Mail with Video Attachment":
             raise ValueError("Video Length must be smaller than No Mail Sending Interval.")
 
 
@@ -95,12 +165,13 @@ def save_config():
         model = YOLO(os.path.join("yolo_models", selected_model))
         config["yolo_model_path"] = os.path.join("yolo_models", selected_model)
 
-        mail_option = mail_option_combobox.get()
         config["mail_option"] = mail_option
 
         config["source"] = source_entry.get()
         config["confidence_level"] = confidence_level_val
         config["video_length"] = videolen_val
+        config["show_stream"] = show_stream_var.get()
+        config["record_plot"] = record_plot_var.get()
 
         class_ids_str = class_id_entry.get()
 
@@ -177,17 +248,52 @@ def update_class_id_list(event=None):
     #yolo_model_combobox.selection_clear()
     toggle_save_button()
 
+def update_zoom_level(zoom_level):
+    # Call the function to update the zoom level in axis_camera_control.py
+    payload = {
+        "apiVersion": "1",
+        "context": "Axis library",
+        "method": "setMagnification",
+        "params": {
+            "optics": [
+                {
+                    "opticsId": 0,
+                    "magnification": zoom_level
+                }
+            ]
+        }   
+    }
+    try:
+        response = requests.post(camera_url, json=payload, auth=auth)
+    except RequestException as e:
+        print("Request Exception:", e)
+   
+
+def on_slider_release(event):
+    update_zoom_level(zoom_slider.get())
+
+def on_closing():
+    # Function to handle the window closure event
+    root.destroy()  # Destroy the Tkinter window
+    plt.close('all')  # Close all matplotlib windows
+
 # Load default configuration from JSON file
 config_file = Path("parameters.json")
 
 with open(config_file, "r") as f:
     config = json.load(f)
 
+parsed_url = urlparse(config["source"])
+camera_url = f"http://{parsed_url.hostname}/axis-cgi/opticscontrol.cgi"  # Replace with the actual URL
+auth = requests.auth.HTTPDigestAuth(parsed_url.username, parsed_url.password)
+
 # Create a simple tkinter GUI
 root = tk.Tk()
-root.title("Alascom Object Detection")
+root.title("Alascom Axis Camera Object Detection")
 style = ttk.Style()
 style.theme_use("clam")
+
+root.protocol("WM_DELETE_WINDOW", on_closing)
 
 # Confidence Level
 Label(root, text="Confidence Level:").grid(row=0, column=0, padx=10, pady=10)
@@ -279,19 +385,42 @@ scrollbar.config(command=listbox.yview)
 
 # Save Button
 save_button = Button(root, text="Save Parameters", command=save_config, state='disabled')
-save_button.grid(row=8, column=0, columnspan=2, pady=20)
+save_button.grid(row=9, column=3, columnspan=2, pady=20)
 
 error_label = Label(root, text="", fg="red")
-error_label.grid(row=9, column=0, columnspan=4)
+error_label.grid(row=10, column=0, columnspan=4)
 
 # Start Button
 start_button = Button(root, text="Start Detection", command=start_program, state=tk.NORMAL)
-start_button.grid(row=8, column=2, pady=10, padx=10)
+start_button.grid(row=9, column=2, pady=10, padx=10)
 
 # Stop Button
 stop_button = Button(root, text="Stop Detection", command=stop_program, state=tk.DISABLED)
-stop_button.grid(row=8, column=2, pady=10,  padx=(280,10))
+stop_button.grid(row=9, column=2, pady=10,  padx=(280,10))
 
+plot_button = Button(root, text="Show Plot", command=make_plot, state=tk.NORMAL)
+plot_button.grid(row=8, column=2, pady=10,  padx=(280,10))
+
+show_stream_var = tk.BooleanVar(value=bool(config["show_stream"]))
+show_stream_checkbox = Checkbutton(root, text="Show Video Stream", variable=show_stream_var)
+show_stream_checkbox.grid(row=8, column=3, pady=10, padx=10)
+show_stream_checkbox.config(command=toggle_save_button)
+
+record_plot_var = tk.BooleanVar(value=bool(config["record_plot"]))
+record_plot_checkbox = Checkbutton(root, text="Record New Plot", variable=record_plot_var)
+record_plot_checkbox.grid(row=8, column=2, pady=10, padx=10)
+record_plot_checkbox.config(command=toggle_save_button)
+
+zoom_slider_label = Label(root, text="Zoom Level:")
+zoom_slider_label.grid(row=9, column=0, padx=10, pady=10)
+
+zoom_slider = Scale(root, from_=1, to=2, resolution=0.01, orient=tk.HORIZONTAL, length=200)
+zoom_slider.set(1.0)  # Set the initial value
+zoom_slider.grid(row=9, column=1, padx=10, pady=10)
+zoom_slider.bind("<ButtonRelease-1>", on_slider_release)
+#zoom_slider.config(command=lambda value: update_zoom_level(zoom_slider.get()))
+
+update_zoom_level(1.0)
 update_class_id_list()
 attachment_changed()
 

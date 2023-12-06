@@ -1,14 +1,15 @@
 {
     "yolo_model_path": "yolo_models/yolov8n.pt",
     "source": "rtsp://root:pass@192.168.1.190/axis-media/media.amp",
-    "confidence_level": 0.5,
+    "confidence_level": 0.7,
     "class_ids": [
-        0,
-        1
+        0
     ],
     "email_trigger_count": 5,
-    "mail_pause_in_sec": 15.0,
+    "mail_pause_in_sec": 5.05,
     "time_interval_for_enough_frame_sightings_in_sec": 2.0,
-    "video_length": 4.9,
-    "mail_option": "Mail with Video Attachment"
+    "video_length": 5.05,
+    "mail_option": "Mail without Attachment",
+    "show_stream": true,
+    "record_plot": false
 }
