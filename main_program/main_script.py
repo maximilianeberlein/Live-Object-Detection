@@ -1,139 +1,126 @@
-import json
-from ultralytics import YOLO
-from pathlib import Path
-import tkinter as tk
-from tkinter import ttk  # Import the ttk module
-from tkinter import Checkbutton
-from tkinter.ttk import Combobox
 from tkinter import Label, Entry, Button, Listbox, Scrollbar, messagebox, Scale
-import os
-import requests
-from requests.exceptions import RequestException
-from urllib.parse import urlparse
-import csv
-import matplotlib.pyplot as plt
-from datetime import datetime, timedelta
-from collections import Counter
-import main_program
-import threading
-from PIL import Image, ImageTk
-import smtplib
+from concurrent.futures import ThreadPoolExecutor
 from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+from datetime import datetime, timedelta
+from smtplib import SMTP, SMTPException
 from email.mime.image import MIMEImage
 from email.mime.base import MIMEBase
+from email.mime.text import MIMEText
+from urllib.parse import urlparse
+from tkinter.ttk import Combobox
+from tkinter import Checkbutton
+import matplotlib.pyplot as plt
+from collections import Counter
+from PIL import Image, ImageTk
+from ultralytics import YOLO
 from email import encoders
-import io
+from tkinter import ttk 
+import tkinter as tk
 import email_config
-from concurrent.futures import ThreadPoolExecutor
-import imageio
 import numpy as np
-import cv2
-import multiprocessing
+import threading
+import requests
+import imageio
+import json
 import time
 import cv2
-# "source": "rtsp://root:pass@192.168.1.190/axis-media/media.amp",
+import csv
+import io
+import os
 
-man_start_but_press = False
-man_stop_but_press = False
-manual_video_max_len = 30
 
-config_file = Path("parameters.json")
+# Global variables
+detected_class_ids_list, total_times_list, email_sent_flags = [], [], []
+cap, camera_url, auth = None, None, None
+man_start_but_press, man_stop_but_press = False, False
+manual_video_max_len = 30                                                                                                       # maximum length of manual video recording in seconds before it is stopped
 
-with open(config_file, "r") as f:
-    config = json.load(f)
-parsed_url = urlparse(config["source"])
-camera_url = f"http://{parsed_url.hostname}/axis-cgi/opticscontrol.cgi"  # Replace with the actual URL
-auth = requests.auth.HTTPDigestAuth(parsed_url.username, parsed_url.password)
+# File names
+PARAMETERS_FILE = "parameters.json"
+PLOT_DATA_FILE = 'plot_data.csv'
 
-detected_class_ids_list = []
-total_times_list = []
-email_sent_flags = [] 
+ ########################################################################################## Yolo Live Object Detection with Mail Alerts
 
-cap = None  # Initialize the capture object outside the loop
 
 def send_mail(mail_time, class_name, media_attachment, manual):
 
-    msg = MIMEMultipart()
-    msg['From'] = email_config.sender_email
-    msg['Subject'] = email_config.get_email_subject(class_name, mail_time, manual)
-    msg.attach(MIMEText(email_config.get_email_body(class_name, mail_time, manual), 'plain'))
+    msg = MIMEMultipart() 
+    msg['From'] = email_config.sender_email                                                                                     # Define Mail Sender Address
+    msg['Subject'] = email_config.get_email_subject(class_name, mail_time, manual)                                              # Define Mail Subject
+    msg.attach(MIMEText(email_config.get_email_body(class_name, mail_time, manual), 'plain'))                                   # Define Mail Text
 
-
-    if media_attachment != None:
+    if media_attachment != None:                                                                                                # Attach media attachment if available
         msg.attach(media_attachment)
 
-    with smtplib.SMTP(email_config.smtp_server, email_config.smtp_port) as server:
+    with SMTP(email_config.smtp_server, email_config.smtp_port) as server:                                                      # Connect to SMTP server
         server.starttls()
-        server.login(email_config.sender_email, email_config.smtp_password)
 
-        for recipient_email in email_config.recipient_emails:
-            msg['To'] = recipient_email
+        try:
+            server.login(email_config.sender_email, email_config.smtp_password)                                                 # Login to SMTP server
 
-            try:
+            for recipient_email in email_config.recipient_emails:                                                               # Send emails to recipients
+                msg['To'] = recipient_email
                 server.sendmail(email_config.sender_email, recipient_email, msg.as_string())
-            except Exception as e:
-                print(e)
 
-        server.quit()
-
+        except SMTPException as e:
+            print(f"SMTP Exception: {e}")
 
 
 def prepare_mail_attachments(r_list, class_id, mail_option, manual):
-
-    r = r_list[0]
-    mail_time = datetime.now()
-    if not manual:
-        class_name = r.names[class_id]
-    else:
-        all_class_ids = list(set(int(item) for r in r_list for item in r.boxes.cls.tolist()))
-        class_names = [r.names[integer] for integer in all_class_ids]
-        class_name = '-'.join(class_names)
-
+                            
+    r = r_list[0]                                                                                                               # image attachment: r_list[0] contains the image frame /// video attachment: r_list contains all the video frames
+    mail_time = datetime.now()                                                                      
+    class_name = '-'.join(r.names[integer] for integer in set(int(item) for r in r_list                                         # Define the 'class name' based on whether it's a manual or automatic detection
+                 for item in r.boxes.cls.tolist())) if manual else r.names[class_id]
+    
     if (not manual and mail_option == "Mail with Image Attachment") or (manual and mail_option_combobox.get() == "Mail with Image Attachment"):
-        im_array = r.plot()  # plot a BGR numpy array of predictions
-        im = Image.fromarray(im_array[..., ::-1])  # RGB PIL image
+        im_array = r.plot()  
+        im = Image.fromarray(im_array[..., ::-1])                                                                       
         image_byte_array = io.BytesIO()
         im.save(image_byte_array, format='JPEG')
-        media_attachment = MIMEImage(image_byte_array.getvalue(), name=f"{class_name}_detection.jpg")
-
+        media_attachment = MIMEImage(image_byte_array.getvalue(), name=f"{class_name}_detection.jpg")                           # Create image attachment
+ 
+    
     elif (not manual and mail_option == "Mail with Video Attachment") or (manual and mail_option_combobox.get() == "Mail with Video Attachment"):
         total_times = [r.speed['preprocess'] + r.speed['inference'] + r.speed['postprocess'] for r in r_list]
         average_fps = len(total_times) / sum(total_times) * 1000
-
-        video_byte_array = io.BytesIO()
+                                                                                                                        
+        video_byte_array = io.BytesIO()                                                                                
         with imageio.get_writer(video_byte_array, format='mp4', fps=average_fps) as writer:
             for r in r_list:
                 frame = r.plot()[..., ::-1]
                 writer.append_data(frame)
 
-        video_base = MIMEBase('application', 'octet-stream')
-        video_base.set_payload(video_byte_array.getvalue())
-        encoders.encode_base64(video_base)
-        video_base.add_header('Content-Disposition', f"attachment; filename={class_name}_detection.mp4")
-        media_attachment = video_base
-
-
-    else:
-        media_attachment = None
+        media_attachment = MIMEBase('application', 'octet-stream')
+        media_attachment.set_payload(video_byte_array.getvalue())
+        encoders.encode_base64(media_attachment)
+        media_attachment.add_header('Content-Disposition', f"attachment; filename={class_name}_detection.mp4")                  # Create video attachment
     
+    else:
+        media_attachment = None                                                                                                 # No media attachment for other cases
+
     send_mail(mail_time, class_name, media_attachment, manual)
+
 
 def send_email_wrapper(args):
     prepare_mail_attachments(*args)
 
 
-def main_function():
+def display_videoframe_on_canvas(frame):                                                                                        # display yolo frame output as image in tkinter canvas
 
-    global detected_class_ids_list
-    global total_times_list
-    global email_sent_flags
-    global man_start_but_press
-    global man_stop_but_press
-  
-    with open(config_file, "r") as f:
-        parameters = json.load(f)
+    img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    photo = ImageTk.PhotoImage(image=img)
+    canvas.config(width=img.width, height=img.height)
+    canvas.create_image(0, 0, anchor=tk.NW, image=photo)
+    canvas.image = photo
 
+
+def run_object_detection():                                                                                                     # This function continuously captures frames from the video source, performs object detection using YOLO, and handles email notifications and manual video recording based on the configured parameters.
+
+
+    global detected_class_ids_list, total_times_list, email_sent_flags, man_start_but_press, man_stop_but_press
+ 
+    parameters = load_parameters()                                                                                              # Load parameters from parameters.json
     email_trigger_count = parameters["email_trigger_count"] - 1
     mail_option = parameters["mail_option"]
     video_record_in_sec = parameters["video_length"]
@@ -143,80 +130,75 @@ def main_function():
     record_plot = parameters["record_plot"]
     show_stream = parameters["show_stream"]
 
-    results_list = {class_id: [] for class_id in class_ids}
+    results_list = {class_id: [] for class_id in class_ids}                                                                     # Initialize result lists, counters, and flags
+    save_manual_video, manual_res_list = False, []
+    count, time_last_mail, time_first_detection, save_frames_for_video = ({class_id: 0 for class_id in class_ids} for _ in range(4))
     model = YOLO(parameters["yolo_model_path"])
-    count = {class_id: 0 for class_id in class_ids}
-    time_last_mail = {class_id: 0 for class_id in class_ids}
-    time_first_detection = {class_id: 0 for class_id in class_ids}
-    save_frames_for_video = {class_id: False for class_id in class_ids}
-    save_manual_video = False
-    manual_res_list = []
 
-    if record_plot:
-        if os.path.exists('plot_data.csv'):
-            with open('plot_data.csv', 'w', newline=''):
-                pass  # Empty block to truncate the file
-    
-    if not show_stream:
+    if record_plot and os.path.exists(PLOT_DATA_FILE):                                                                          # Clear old plot data if recording a new plot
+        with open(PLOT_DATA_FILE, 'w', newline=''):
+            pass  
+
+    if not show_stream:                                                                                                         # If the 'show stream' checkbox is empty, clear the canvas
         canvas.delete("all")
   
-    with ThreadPoolExecutor(max_workers=None) as executor:
+    with ThreadPoolExecutor(max_workers=None) as executor:                                                                      # Perform the object detection in multiple threads so that sending emails does not halt the program  
         while cap.isOpened():
             success, frame = cap.read()
 
             if success:
-                result = model.predict(frame, conf=parameters["confidence_level"], verbose=False)
+                result = model.predict(frame, conf=parameters["confidence_level"], verbose=False)                               # Perform object detection using YOLO
                 r = result[0]
 
-                if show_stream: 
+                if show_stream:                                                                                                 # If the 'show stream' checkbox is ticked, display the video in the UI window
                     annotated_frame = r.plot()
-                    update_display(annotated_frame)
+                    display_videoframe_on_canvas(annotated_frame)
                 
-                email_flag = 0
-                for class_id in class_ids:
-                    if class_id in r.boxes.cls:
+                email_flag = 0                                                                                                  # email_flag is the variable that tracks whether a mail has been sent in this loop iteration (0 = no mail sent, 1 = automated mail sent, 2 = manual mail sent)
+                for class_id in class_ids:                                                                                      # Check only for the classes defined in 'Object IDs to be emailed (comma-separated)' in the UI
+                    if class_id in r.boxes.cls:                                                                                 # Check if these chosen classes are detected by YOLO algorithm in the current frame
                         time_now = time.time()
-                        if time_now - time_last_mail[class_id] >= mail_pause_in_sec:
+                        if time_now - time_last_mail[class_id] >= mail_pause_in_sec:                                            # Check if enough time has passed since the last email
                             if count[class_id] == 0:
                                 time_first_detection[class_id] = time.time()
 
                             count[class_id] += 1
 
-                            if time_now - time_first_detection[class_id] > time_interval_for_enough_frame_sightings_in_sec:
+                            if time_now - time_first_detection[class_id] > time_interval_for_enough_frame_sightings_in_sec:     # if not enough frames have been detected within the time interval, reset count to 0 (is helpful to disable mail alerts for short, false detections)
                                 count[class_id] = 0
 
-                            if count[class_id] >= email_trigger_count:
-                                if mail_option == "Mail with Image Attachment" or mail_option == "Mail without Attachment":
-                                    executor.submit(send_email_wrapper, [[r], class_id, mail_option, False])
+                            if count[class_id] >= email_trigger_count:                                                          # If enough frames have been detected before exceeding the time interval, trigger a mail send event
+                                if mail_option == "Mail with Image Attachment" or mail_option == "Mail without Attachment":     
+                                    executor.submit(send_email_wrapper, [[r], class_id, mail_option, False])                    # Send automated email without/image attachment in a new thread
                                     email_flag = 1
                                 elif mail_option == "Mail with Video Attachment":
-                                    save_frames_for_video[class_id] = True
+                                    save_frames_for_video[class_id] = True                                                      # Start recording video frames (automated)
 
-                                time_last_mail[class_id] = time.time()
+                                time_last_mail[class_id] = time.time()                                                          # Update last email time and reset counter
                                 count[class_id] = 0
                         
-                        if save_frames_for_video[class_id]:
-                            if time_now - time_last_mail[class_id] <= video_record_in_sec:
+                        if save_frames_for_video[class_id]:                                                                     # Check if automated video recording should be started
+                            if time_now - time_last_mail[class_id] <= video_record_in_sec:                                      # As long as the 'video length' defined in UI is not exceeded, save all frames into a list
                                 results_list[class_id].append(r)
-                            else:
+                            else:                                                                                               # If the 'video length' has been exceeded, send email with video attachment in a new thread
                                 frames_to_save = results_list[class_id].copy()
                                 executor.submit(send_email_wrapper, [frames_to_save, class_id, mail_option, False])
                                 email_flag = 1
-                                results_list[class_id].clear()  # Clear the list for the specific class_id
+                                results_list[class_id].clear()  
                                 save_frames_for_video[class_id] = False
 
-                if man_start_but_press:
+                if man_start_but_press:                                                                                         # Check if the manual start button has been pressed
                     man_start_but_press = False
                     if mail_option_combobox.get() == "Mail with Image Attachment" or mail_option_combobox.get() == "Mail without Attachment":
-                        executor.submit(send_email_wrapper, [[r], None, mail_option, True])
+                        executor.submit(send_email_wrapper, [[r], None, mail_option, True])                                     # Send manual email without/image attachment in a new thread
                         email_flag = 2
                     elif mail_option_combobox.get() == "Mail with Video Attachment":
-                        save_manual_video = True
+                        save_manual_video = True                                                                                # Start recording video frames (manual)
                         manual_video_start_time = time.time()
 
-                if save_manual_video:
+                if save_manual_video:                                                                                           # Check if manual video recording should be started
                     manual_res_list.append(r)
-                    if time.time() - manual_video_start_time > manual_video_max_len:
+                    if time.time() - manual_video_start_time > manual_video_max_len:                                            # If 'manual_video_max_len' (defined above in the code) is exceeded, stop video recording and send manual mail with video attachment
                         man_stop_but_press = False
                         save_manual_video = False
                         manual_frames_to_save = manual_res_list.copy()
@@ -227,7 +209,8 @@ def main_function():
                         manual_start_button.config(state=tk.NORMAL)
                         messagebox.showerror("Error", f"Manual Video can maximum be {manual_video_max_len}")
 
-                if man_stop_but_press:
+                if man_stop_but_press:                                                                                          # If the manual stop button has been pressed, stop video recording and send manual mail with video attachment
+                    man_stop_but_press = False
                     man_stop_but_press = False
                     save_manual_video = False
                     manual_frames_to_save = manual_res_list.copy()
@@ -236,41 +219,83 @@ def main_function():
                     manual_res_list.clear()
 
 
-                if record_plot:
+                if record_plot:                                                                                                 # If 'record new plot' checkbox is ticked, save the email_flags, detected classes and timestamps into a csv file                                                                   
                     email_sent_flags.append(email_flag)
                     detected_class_ids_list.append(np.array(r.boxes.cls))
                     total_times_list.append(time.time())
-            
-                    # the frequency of data saving into csv file is arbitrarly and could be tuned
-                    if len(detected_class_ids_list) % 25 == 0:
-                        # Save the array and total times to the same CSV file
-                        with open('plot_data.csv', 'a', newline='') as csvfile:
-                            csvwriter = csv.writer(csvfile)
-                            for detected_class_id, total_time, email_sent_flag in zip(detected_class_ids_list, total_times_list, email_sent_flags):
-                                csvwriter.writerow(detected_class_id.tolist() + [total_time, email_sent_flag])
-                        
-                        # Reset the lists
-                        detected_class_ids_list = []
-                        total_times_list = []
-                        email_sent_flags = []
-    
+                    if len(detected_class_ids_list) % 25 == 0:                                                                  # The frequency of data saving (here 25) into csv file is arbitrarly and could be tuned
+                        save_plot_data()
             else:
                 break
     canvas.delete("all")
+ 
+ ########################################################################################## Saving and Displaying Plot
 
+
+def save_plot_data():                                                                                                           # This function appends detected class IDs, total times, and email sent flags to a CSV file. It is typically called at intervals during the object detection loop.
+
+
+    global detected_class_ids_list, total_times_list, email_sent_flags
+
+    with open(PLOT_DATA_FILE, 'a', newline='') as csvfile:
+        csvwriter = csv.writer(csvfile)
+        for detected_class_id, total_time, email_sent_flag in zip(detected_class_ids_list, total_times_list, email_sent_flags):
+            csvwriter.writerow(detected_class_id.tolist() + [total_time, email_sent_flag])
     
-def update_display(frame):
-    img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    photo = ImageTk.PhotoImage(image=img)
+    detected_class_ids_list, total_times_list, email_sent_flags = [], [], []                                                    # Reset the lists for the next interval
 
-    canvas.config(width=img.width, height=img.height)
-    canvas.create_image(0, 0, anchor=tk.NW, image=photo)
-    canvas.image = photo
 
-#############################################################################################################################
+def show_plot_data():                                                                                                           # This function reads the object detection data from a CSV file and generates a plot showing the number of appearances of each detected class over time.
 
-def is_save_needed():
-    # Check if any parameter has been changed
+
+    plt.close('all')
+    model = YOLO(config["yolo_model_path"])
+    class_names_by_id = {int(class_id): class_name for class_id, class_name in model.names.items()}                             # Load YOLO model and retrieve class names
+    data = []
+
+    with open(PLOT_DATA_FILE, 'r') as csvfile:                                                                                  # Read data from the CSV file and convert values to floats
+        csvreader = csv.reader(csvfile)
+        data = [[float(value) for value in row] for row in csvreader] 
+    
+    class_counts_over_time = [Counter(row[:-2]) for row in data[1:]]                                                            # Extract total class counts, timestamps, and email_flags
+    total_times = [row[-2] for row in data[1:]]
+    email_flags = [row[-1] for row in data[1:]]
+
+    class_ids = set(class_id for time_step_counts in class_counts_over_time for class_id in time_step_counts)                   # Extract class IDs and their counts
+    class_counts_by_class = {class_id: [counts[class_id] for counts in class_counts_over_time] for class_id in class_ids}
+    start_time = datetime.fromtimestamp(total_times[0])                                                                         # Convert total_times to seconds
+    total_times_seconds = [start_time + timedelta(seconds=time - total_times[0]) for time in total_times]
+
+    plt.figure(figsize=(10, 6))
+
+    for class_id, counts_over_time in class_counts_by_class.items():
+        class_name = class_names_by_id.get(int(class_id), f'Class {int(class_id)}')                                             # Use class name if available, else use class ID for Plot Label
+        plt.plot(total_times_seconds, counts_over_time, label=class_name)                                                       # Plot the sum of each class over time using accumulated total_time as the x-axis
+ 
+    legend1_exists, legend2_exists = False, False
+    for time_point, email_flag in zip(total_times_seconds, email_flags):                                                        # Add vertical lines for displaying sent emails (1 = automated, 2 = manual)
+        if email_flag == 1:
+            label = 'Automatic Email Sent' if email_flag == 1 and not legend1_exists else ''
+            plt.axvline(x=time_point, color='black', linestyle='--', alpha=0.5, label=label)
+            legend1_exists = True
+        if email_flag == 2:
+            label = 'Manual Email Sent' if email_flag == 2 and not legend2_exists else ''
+            plt.axvline(x=time_point, color='black', linestyle='--', label=label)
+            legend2_exists = True
+    
+    plt.gca().xaxis_date()
+    plt.gcf().autofmt_xdate()
+    plt.title('Number of Appearances of each Detected Class over Time')
+    plt.xlabel('Total Time (s)')
+    plt.ylabel('Number of Appearances')
+    plt.legend()
+    plt.show()
+
+ ########################################################################################## Parameter Saving Logic
+
+
+def is_save_needed():                                                                                                           # Check if any parameter in the UI has been changed compared to the saved values in parameters.json                                                              
+
     try:
         error_label.config(text="")
         return (
@@ -290,246 +315,125 @@ def is_save_needed():
         error_label.config(text=str(e))
         return False
 
-def toggle_save_button(event=None):
-
+def update_save_button_state(event=None):                                                                                       # This function checks if any parameter has been changed by calling the is_save_needed() function. If changes are detected, the save_button can be clicked. Otherwise,  the button is disabled and cannot be clicked.
     save_button['state'] = 'normal' if is_save_needed() else 'disabled'
 
-def start_program():
 
-    global cap, camera_url, auth
-    with open(config_file, "r") as f:
-        parameters = json.load(f)
-    video_source = parameters["source"]
-
-    parsed_url = urlparse(video_source)
-    camera_url = f"http://{parsed_url.hostname}/axis-cgi/opticscontrol.cgi"  # Replace with the actual URL
-    auth = requests.auth.HTTPDigestAuth(parsed_url.username, parsed_url.password)
-
-    if video_source.isdigit():
-        # If video_source consists of digits, treat it as a webcam index
-        cap = cv2.VideoCapture(int(video_source))
-    else:
-        # If video_source is a string, treat it as an RTSP link
-        cap = cv2.VideoCapture(video_source)
- 
-  
-    start_button.config(state=tk.DISABLED)
-    stop_button.config(state=tk.NORMAL)
- 
-    thread = threading.Thread(target=main_function, name='main_function')
-    thread.start()
-
-# Function to stop the main_program.py
-def stop_program():
-    global cap
-    if cap is not None and cap.isOpened():
-            cap.release()
-
-    with open('plot_data.csv', 'a', newline='') as csvfile:
-        csvwriter = csv.writer(csvfile)
-        for detected_class_id, total_time, email_sent_flag in zip(detected_class_ids_list, total_times_list, email_sent_flags):
-            csvwriter.writerow(detected_class_id.tolist() + [total_time, email_sent_flag])
-
-    start_button.config(state=tk.NORMAL)
-    stop_button.config(state=tk.DISABLED)
-  
-def make_plot():
-    plt.close('all')
-    model = YOLO(config["yolo_model_path"])
-    class_names_by_id = {int(class_id): class_name for class_id, class_name in model.names.items()}
-    csv_file_path = 'plot_data.csv'
-    data = []
-
-    with open(csv_file_path, 'r') as csvfile:
-        csvreader = csv.reader(csvfile)
-        for row in csvreader:
-            # Convert each value to float
-            row = [float(value) for value in row]
-            data.append(row)
-
-    class_counts_over_time = []
-    total_times = []  # Initialize with 0, as the first total_time is the time difference from the start
-    email_flags = []
-
-    for i in range(1, len(data)):
-        total_times.append(data[i][-2])  # Accumulate total_time
-        class_counts = Counter(data[i][:-2])  # Exclude the last two columns (email_flag and total_time)
-        class_counts_over_time.append(class_counts)
-        email_flags.append(data[i][-1])  # Last element is the email_flag
-
-    # Extract class IDs and their counts
-    class_ids = list(set(class_id for time_step_counts in class_counts_over_time for class_id in time_step_counts))
-    class_counts_by_class = {class_id: [counts[class_id] for counts in class_counts_over_time] for class_id in class_ids}
-
-    # Convert total_times to seconds
-    start_time = datetime.fromtimestamp(total_times[0])
-    total_times_seconds = [start_time + timedelta(seconds=time - total_times[0]) for time in total_times]
-
-    # Plot the sum of each class over time using accumulated total_time as the x-axis
-    plt.figure(figsize=(10, 6))
-
-    for class_id, counts_over_time in class_counts_by_class.items():
-        class_name = class_names_by_id.get(int(class_id), f'Class {int(class_id)}')  # Use class name if available, else use class ID
-        plt.plot(total_times_seconds, counts_over_time, label=class_name)
-
-    legend_text_1 = False
-    legend_text_2 = False
-    for time_point, email_flag in zip(total_times_seconds, email_flags):
-        if email_flag == 1:
-            label1 = 'Automatic Email Sent' if email_flag == 1 and not legend_text_1 else ''
-            plt.axvline(x=time_point, color='black', linestyle='--', alpha=0.5, label=label1)
-            legend_text_1 = True
-        if email_flag == 2:
-            label2 = 'Manual Email Sent' if email_flag == 2 and not legend_text_2 else ''
-            plt.axvline(x=time_point, color='black', linestyle='--', label=label2)
-            legend_text_2 = True
-    
-    plt.gca().xaxis_date()
-    plt.gcf().autofmt_xdate()
-    plt.title('Number of Appearances of each Detected Class over Time')
-    plt.xlabel('Total Time (s)')
-    plt.ylabel('Number of Appearances')
-    plt.legend()
-    plt.show()
-
-def is_valid_class_ids(class_ids_str, class_id_list):
+def check_class_ids_vadility(class_ids_str, class_id_list):                                                                     # This function checks if the provided class IDs string can be converted into a list of integers. It also checks whether each integer is within the valid range for the given class_id_list.
     try:
         class_ids = [int(class_id) for class_id in class_ids_str.split(",")]
         return all(0 <= cid < len(class_id_list) for cid in class_ids)
     except ValueError:
         return False
 
-def save_config():
+
+def check_non_negative(value, name):
+    if value < 0:
+        raise ValueError(f"{name} must be a non-negative float.")
+
+
+def save_parameters():                                                                                                          # This function checks the validity of all parameters after the save button has been pressed. If valid, the updated parameters are saved to parameters.json. 
+
     try:
+        check_non_negative(float(videolen_entry.get()), "Video Length")
+        check_non_negative(int(email_trigger_count_entry.get()), "Email Trigger Count")
+        check_non_negative(float(mail_pause_entry.get()), "Mail Pause")
+        check_non_negative( float(time_interval_entry.get()), "Time Interval")
 
-        videolen_val = float(videolen_entry.get())
-        confidence_level_val = float(confidence_entry.get())
-        email_trigger_count_val = int(email_trigger_count_entry.get())
-        mail_pause_val = float(mail_pause_entry.get())
-        time_interval_val = float(time_interval_entry.get())
-        mail_option = mail_option_combobox.get()
-
-        if not (0.0 <= confidence_level_val <= 1.0):
+        if not (0.0 <= float(confidence_entry.get()) <= 1.0):
             raise ValueError("Confidence Level must be between 0.0 and 1.0.")
-        
-        if videolen_val < 0:
-            raise ValueError("Video Length must be a non-negative float.")
-
-        if email_trigger_count_val < 0:
-            raise ValueError("Time Interval must be a non-negative float.")
-        
-        if mail_pause_val < 0:
-            raise ValueError("Mail Pause must be a non-negative float.")
-        
-        if time_interval_val < 0:
-            raise ValueError("Time Interval must be a non-negative float.")
-        
-        if videolen_val >= mail_pause_val and mail_option == "Mail with Video Attachment":
+        if float(videolen_entry.get()) >= float(mail_pause_entry.get()) and mail_option_combobox.get() == "Mail with Video Attachment":
             raise ValueError("Video Length must be smaller than No Mail Sending Interval.")
+        model_path = os.path.join("yolo_models", yolo_model_combobox.get())
+        if not check_class_ids_vadility(class_id_entry.get(), YOLO(model_path).names):
+            raise ValueError(f"Invalid class ids. Must be comma-separated integers between 0 and {len(YOLO(model_path).names) - 1}.")
 
+        config.update({
+            "yolo_model_path": model_path,
+            "mail_option": mail_option_combobox.get(),
+            "source": source_entry.get(),
+            "confidence_level": float(confidence_entry.get()),
+            "video_length": float(videolen_entry.get()),
+            "show_stream": show_stream_var.get(),
+            "record_plot": record_plot_var.get(),
+            "class_ids": [int(class_id) for class_id in class_id_entry.get().split(",")],
+            "email_trigger_count": int(email_trigger_count_entry.get()),
+            "mail_pause_in_sec": float(mail_pause_entry.get()),
+            "time_interval_for_enough_frame_sightings_in_sec": float(time_interval_entry.get())
+        })
 
-        selected_model = yolo_model_combobox.get()
-        model = YOLO(os.path.join("yolo_models", selected_model))
-        config["yolo_model_path"] = os.path.join("yolo_models", selected_model)
-
-        config["mail_option"] = mail_option
-
-        config["source"] = source_entry.get()
-        config["confidence_level"] = confidence_level_val
-        config["video_length"] = videolen_val
-        config["show_stream"] = show_stream_var.get()
-        config["record_plot"] = record_plot_var.get()
-
-        class_ids_str = class_id_entry.get()
-
-        if not is_valid_class_ids(class_ids_str, model.names):
-            raise ValueError(f"Invalid class ids. Must be comma-separated integers between 0 and {len(model.names) - 1}.")
-
-        config["class_ids"] = [int(class_id) for class_id in class_ids_str.split(",")]
-
-        config["email_trigger_count"] = email_trigger_count_val
-        config["mail_pause_in_sec"] = mail_pause_val
-        config["time_interval_for_enough_frame_sightings_in_sec"] = time_interval_val
-
-        toggle_save_button()
-
-        with open(config_file, "w") as f:
+        with open(PARAMETERS_FILE, "w") as f:                                                                                   # Save parameters in parameters.json.
             json.dump(config, f, indent=4)
+
+        update_save_button_state()                                                                                              # Update the state of the Save button based on changes (Here: Disable the save button again as all the new parameters have been saved)
+        update_video_source_url(urlparse(config["source"]))                                                                     # If the 'source' parameter is changed to point to another camera stream, we might need to reauthenticate to have access to that camera stream.
 
     except ValueError as e:
         messagebox.showerror("Error", str(e))
 
-def attachment_changed(event=None):
+ ########################################################################################## UI Triggered Functions
+
+
+def update_video_source_url(parsed_url):                                                                                        # This function checks if the 'source' parameter is a valid URL hostname. If yes, it updates the global variables `camera_url` and `auth` for accessing the camera stream. It also manages the visibility ofthe zoom slider and its label, depending on whether the URL is a valid hostname.
+
+    global camera_url, auth
+
+    if parsed_url.hostname:                                                                                                     # If a hostname is present in the parsed URL, update camera_url and auth for camera stream access
+        camera_url = f"http://{parsed_url.hostname}/axis-cgi/opticscontrol.cgi"
+        auth = requests.auth.HTTPDigestAuth(parsed_url.username, parsed_url.password)
+        zoom_slider.grid()
+        zoom_slider_label.grid()
+    else:
+        camera_url, auth = None, None
+        zoom_slider.grid_remove()
+        zoom_slider_label.grid_remove()
+
+
+def update_mail_option(event=None):                                                                                             # This function dynamically configures the visibility and text of widgets related to mail options in the GUI based on the selected mail option from the mail_option_combobox.
 
     current_option = mail_option_combobox.get()
 
-    email_trigger_count_label.config(text="Nr. of Frames with Detection for Video Recording Start")
-    email_trigger_count_label.grid()
-    email_trigger_count_entry.grid()
-    time_interval_label.grid()
-    time_interval_entry.grid()
-    mail_pause_label.grid()
-    mail_pause_entry.grid()
-    videolen_label.grid()
-    videolen_entry.grid()
-    class_id_label.grid()
-    class_id_entry.grid()
-    manual_start_button.grid()
+    email_trigger_count_label.config(text="Nr. of Frames with Detection for Video Recording Start")                             # Reset default configuration for widgets
     manual_start_button.config(text="Start Video Recording Manually")
-    manual_stop_button.grid()
     manual_stop_button.config(text="Send Mail with Video")
+    for widget in [email_trigger_count_label, email_trigger_count_entry, time_interval_label, time_interval_entry,
+                    mail_pause_label, mail_pause_entry, videolen_label, videolen_entry, class_id_label, class_id_entry,
+                    manual_start_button, manual_stop_button]:
+        widget.grid()
 
-
-
-    if current_option == "No Mail":
-        # Hide widgets
-        email_trigger_count_label.grid_remove()
-        email_trigger_count_entry.grid_remove()
-        time_interval_label.grid_remove()
-        time_interval_entry.grid_remove()
-        mail_pause_label.grid_remove()
-        mail_pause_entry.grid_remove()
-        videolen_label.grid_remove()
-        videolen_entry.grid_remove()
-        class_id_label.grid_remove()
-        class_id_entry.grid_remove()
-        manual_start_button.grid_remove()
-        manual_stop_button.grid_remove()
+    if current_option == "No Mail":                                                                                             # Customize widget configuration based on the selected mail option
+        for widget in [email_trigger_count_label, email_trigger_count_entry, time_interval_label, time_interval_entry,
+                       mail_pause_label, mail_pause_entry, videolen_label, videolen_entry, class_id_label, class_id_entry,
+                       manual_start_button, manual_stop_button]:
+            widget.grid_remove()
     
     elif current_option == "Mail without Attachment":
         email_trigger_count_label.config(text="Nr. of Frames with Detection for Mail Trigger")
-        videolen_label.grid_remove()
-        videolen_entry.grid_remove()
-        manual_stop_button.grid_remove()
         manual_start_button.config(text="Send Mail Manually")
+        for widget in [videolen_label, videolen_entry, manual_stop_button]:
+            widget.grid_remove()
      
     elif current_option == "Mail with Image Attachment":
         email_trigger_count_label.config(text="Nr. of Frames with Detection for Image Snapshot")
-        videolen_label.grid_remove()
-        videolen_entry.grid_remove()
-        manual_stop_button.grid_remove()
         manual_start_button.config(text="Send Mail with Image Manually")
+        for widget in [videolen_label, videolen_entry, manual_stop_button]:
+            widget.grid_remove()
+
+    update_save_button_state()                                                                                                  # Update the state of the Save button based on changes
 
 
-    #mail_option_combobox.select_clear()
-    toggle_save_button()
-
-def update_class_id_list(event=None):
+def update_class_id_list(event=None):                                                                                           # This function retrieves the selected YOLO model from the yolo_model_combobox and updates the class ID list in the GUI based on the selected  model.
+    
     selected_model = yolo_model_combobox.get()
     model = YOLO(os.path.join("yolo_models", selected_model))
+    listbox.delete(0, tk.END)                                                                                                   # Clear the existing items in the listbox
+    listbox.insert(tk.END, *[f"{class_id}: {class_name}" for class_id, class_name in model.names.items()])                      # Insert class ID and name pairs into the listbox
 
-    # Clear the listbox
-    listbox.delete(0, tk.END)
+    update_save_button_state()                                                                                                  # Update the state of the Save button based on changes
 
-    # Populate the listbox with class IDs for the selected YOLO model
-    for class_id, class_name in model.names.items():
-        listbox.insert(tk.END, f"{class_id}: {class_name}")
 
-    #yolo_model_combobox.selection_clear()
-    toggle_save_button()
+def update_zoom_level(zoom_level):                                                                                              # This function constructs a payload with the desired zoom level and sends a POST request to the Axis camera's optics control endpoint. It uses the provided camera_url and auth for authentication. In case of a timeout or a general request exception, appropriate error messages are printed.
 
-def update_zoom_level(zoom_level):
-    # Call the function to update the zoom level in axis_camera_control.py
     payload = {
         "apiVersion": "1",
         "context": "Axis library",
@@ -538,71 +442,101 @@ def update_zoom_level(zoom_level):
             "optics": [
                 {
                     "opticsId": 0,
-                    "magnification": zoom_level
+                    "magnification": zoom_level                                                                                 # Update the zoom level of an Axis camera using the specified magnification value.
                 }
             ]
         }   
     }
     try:
-        print(zoom_level)
-        response = requests.post(camera_url, json=payload, auth=auth)
-    except RequestException as e:
-        print("Request Exception:", e)
+        response = requests.post(camera_url, json=payload, auth=auth, timeout=2)                                                # If a wrong URL was given, it will lead to a timeout, if there are other connection issues with the camera despite a correct URL, a Request Exception will be triggered.
+    except requests.exceptions.Timeout as t:
+        print("Timeout Error:", t)
+    except requests.exceptions.RequestException as e:
+        print("Request Exception:", e, "re")
    
 
-def on_slider_release(event):
+def on_slider_release(event):                                                                                                   # Callback function triggered when the zoom slider is released.
     update_zoom_level(zoom_slider.get())
 
-def on_closing():
-    # Function to handle the window closure event
-    root.destroy()  # Destroy the Tkinter window
-    plt.close('all')  # Close all matplotlib windows
 
-def manual_start_button_pressed():
+def manual_start_button_pressed():                                                                                              # Callback function triggered when the manual start button is pressed.
+    
     global man_start_but_press
-    man_start_but_press = True
-
-    if mail_option_combobox.get() == "Mail with Video Attachment":
+    man_start_but_press = True                                                                                                  # global variable used in the run_object_detection() function to know when a manual action should be triggered (send  mail without/image attachment or start recording video).
+    if mail_option_combobox.get() == "Mail with Video Attachment":                                                              # If the mail option is "Mail with Video Attachment", it enables the manual stop button and disables the manual start button after the manual start button is pressed
         manual_stop_button.config(state=tk.NORMAL)
         manual_start_button.config(state=tk.DISABLED)
 
 
 def manual_stop_button_pressed():
-    global man_stop_but_press
-    man_stop_but_press = True
-
+    
+    global man_stop_but_press                                                                                                   # Callback function triggered when the manual stop button is pressed.
+    man_stop_but_press = True                                                                                                   # global variable used in the run_object_detection() function to know when the manual video recording should be stopped and a mail with video attachment sent.
     manual_stop_button.config(state=tk.DISABLED)
     manual_start_button.config(state=tk.NORMAL)
-# Load default configuration from JSON file
 
-# Create a simple tkinter GUI
+
+def start_object_detection():                                                                                                   # Callback function that starts the object detection process and is triggered when the start button is pressed
+
+    global cap
+    cap = cv2.VideoCapture(int(load_parameters()["source"]) if load_parameters()["source"].isdigit() else load_parameters()["source"])  # Initialize the cv2 video capture using the source specified in the parameters.
+    start_button.config(state=tk.DISABLED)
+    stop_button.config(state=tk.NORMAL)
+    thread = threading.Thread(target=run_object_detection, name='run_object_detection')                                         # Start a new thread to run the live object detection process concurrently.
+    thread.start()
+
+
+def stop_object_detection():                                                                                                    # Callback function that stops the object detection process and is triggered when the stop button is pressed
+
+    global cap
+    cap.release() if cap is not None and cap.isOpened() else None                                                               # Release the cv2 video capture if it is still open and not None. 
+    start_button.config(state=tk.NORMAL)
+    stop_button.config(state=tk.DISABLED)
+    save_plot_data()                                                                                                            # As we only save the datapoints all x seconds in run_object_detection(), there will quite probably be some datapoints left in 'detected_class_ids_list, total_times_list, email_sent_flags' when stopping the programming that need to be added to plot_data.csv.
+
+ ########################################################################################## TKINTER GUI
+
+
+def closing_window_handle():                                                                                                    # Function to handle the window closure event
+    root.destroy()                                                                                                              # Destroy the Tkinter window
+    plt.close('all')                                                                                                            # Close all open matplotlib windows
+
+
+def load_parameters():                                                                                                          # Load parameters from the cparameters.json file.
+    with open(PARAMETERS_FILE, "r") as f:
+        return json.load(f)
+
+
 root = tk.Tk()
 root.title("Alascom Axis Camera Object Detection")
 style = ttk.Style()
 style.theme_use("clam")
-
-root.protocol("WM_DELETE_WINDOW", on_closing)
+root.protocol("WM_DELETE_WINDOW", closing_window_handle)
+root.columnconfigure(0, minsize=400)
+for row in range(root.grid_size()[1]):
+    root.rowconfigure(row, min=45)
+config = load_parameters()
 
 # Confidence Level
 Label(root, text="Confidence Level:").grid(row=0, column=0, padx=10, pady=10)
 confidence_entry = Entry(root)
 confidence_entry.insert(0, config["confidence_level"])
 confidence_entry.grid(row=0, column=1, padx=10, pady=10)
-confidence_entry.bind("<KeyRelease>", toggle_save_button) 
+confidence_entry.bind("<KeyRelease>", update_save_button_state) 
 
 # Source
 Label(root, text="Videostream Source:").grid(row=1, column=0, padx=10, pady=10)
 source_entry = Entry(root)
 source_entry.insert(0, config["source"])
 source_entry.grid(row=1, column=1, padx=10, pady=10)
-source_entry.bind("<KeyRelease>", toggle_save_button)  
+source_entry.bind("<KeyRelease>", update_save_button_state)  
 
 #Attachment Option
 Label(root, text="Mail Options:").grid(row=2, column=0, padx=10, pady=10)
 mail_option_combobox = Combobox(root, values=["No Mail", "Mail without Attachment", "Mail with Image Attachment", "Mail with Video Attachment"], state='readonly')
 mail_option_combobox.set(config["mail_option"])
 mail_option_combobox.grid(row=2, column=1, padx=10, pady=10)
-mail_option_combobox.bind("<<ComboboxSelected>>", attachment_changed)
+mail_option_combobox.bind("<<ComboboxSelected>>", update_mail_option)
 
 # Email Trigger Count
 email_trigger_count_label = Label(root, text="Number of Frames with Detection for Mail Trigger:")
@@ -610,7 +544,7 @@ email_trigger_count_label.grid(row=3, column=0, padx=10, pady=10)
 email_trigger_count_entry = Entry(root)
 email_trigger_count_entry.insert(0, config["email_trigger_count"])
 email_trigger_count_entry.grid(row=3, column=1, padx=10, pady=10)
-email_trigger_count_entry.bind("<KeyRelease>", toggle_save_button)  
+email_trigger_count_entry.bind("<KeyRelease>", update_save_button_state)  
 
 # Time Interval
 time_interval_label = Label(root, text="Time To be Detected Interval (sec):")
@@ -618,7 +552,7 @@ time_interval_label.grid(row=4, column=0, padx=10, pady=10)
 time_interval_entry = Entry(root)
 time_interval_entry.insert(0, config["time_interval_for_enough_frame_sightings_in_sec"])
 time_interval_entry.grid(row=4, column=1, padx=10, pady=10)
-time_interval_entry.bind("<KeyRelease>", toggle_save_button)  
+time_interval_entry.bind("<KeyRelease>", update_save_button_state)  
 
 # Mail Pause
 mail_pause_label = Label(root, text="No Mail Sending Interval (sec):")
@@ -626,7 +560,7 @@ mail_pause_label.grid(row=5, column=0, padx=10, pady=10)
 mail_pause_entry = Entry(root)
 mail_pause_entry.insert(0, config["mail_pause_in_sec"])
 mail_pause_entry.grid(row=5, column=1, padx=10, pady=10)
-mail_pause_entry.bind("<KeyRelease>", toggle_save_button)  
+mail_pause_entry.bind("<KeyRelease>", update_save_button_state)  
 
 # Video Length
 videolen_label = Label(root, text="Video Length (sec):")
@@ -634,7 +568,7 @@ videolen_label.grid(row=6, column=0, padx=10, pady=10)
 videolen_entry = Entry(root)
 videolen_entry.insert(0, config["video_length"])
 videolen_entry.grid(row=6, column=1, padx=10, pady=10)
-videolen_entry.bind("<KeyRelease>", toggle_save_button)  
+videolen_entry.bind("<KeyRelease>", update_save_button_state)  
 
 # YOLO Model
 Label(root, text="YOLO Model:").grid(row=0, column=2, padx=10, pady=10)
@@ -655,15 +589,7 @@ class_id_label.grid(row=6, column=2, padx=10, pady=10)
 class_id_entry = Entry(root)
 class_id_entry.insert(0, ",".join(map(str, config["class_ids"])))
 class_id_entry.grid(row=6, column=3, padx=10, pady=10)
-class_id_entry.bind("<KeyRelease>", toggle_save_button)  
-
-fixed_width_value = 400
-fixed_height_value = 45
-
-root.columnconfigure(0, minsize=fixed_width_value)
-for row in range(root.grid_size()[1]):
-    root.rowconfigure(row, min=fixed_height_value)
-
+class_id_entry.bind("<KeyRelease>", update_save_button_state)  
 
 # Scrollbar for Listbox
 scrollbar = Scrollbar(root, orient=tk.VERTICAL)
@@ -671,63 +597,68 @@ scrollbar.grid(row=0, column=4, padx=0, pady=10, rowspan=6)
 listbox.config(yscrollcommand=scrollbar.set)
 scrollbar.config(command=listbox.yview)
 
-# Save Button
-save_button = Button(root, text="Save Parameters", command=save_config, state='disabled')
+# Paramter Save Button
+save_button = Button(root, text="Save Parameters", command=save_parameters, state='disabled')
 save_button.grid(row=9, column=3, columnspan=2, pady=20)
 
-error_label = Label(root, text="", fg="red")
-error_label.grid(row=10, column=0, columnspan=4)
-
-# Start Button
-start_button = Button(root, text="Start Detection", command=start_program, state=tk.NORMAL)
+# Program Start Button
+start_button = Button(root, text="Start Detection", command=start_object_detection, state=tk.NORMAL)
 start_button.grid(row=9, column=2, pady=10, padx=10)
 
-# Stop Button
-stop_button = Button(root, text="Stop Detection", command=stop_program, state=tk.DISABLED)
+# Program Stop Button
+stop_button = Button(root, text="Stop Detection", command=stop_object_detection, state=tk.DISABLED)
 stop_button.grid(row=9, column=2, pady=10,  padx=(280,10))
 
-plot_button = Button(root, text="Show Plot", command=make_plot, state=tk.NORMAL)
+# Plot Button
+plot_button = Button(root, text="Show Plot", command=show_plot_data, state=tk.NORMAL)
 plot_button.grid(row=8, column=2, pady=10,  padx=(280,10))
 
+# Manual Mail Button Left
 manual_start_button = Button(root, text="Start Video Recording Manually", command=manual_start_button_pressed, state=tk.NORMAL)
 manual_start_button.grid(row=8, column=0, padx=10, pady=10)
 
+# Manual Mail Button Right
 manual_stop_button = Button(root, text="Send Mail with Video", command=manual_stop_button_pressed, state=tk.DISABLED)
 manual_stop_button.grid(row=8, column=1, padx=10, pady=10)
 
-
+# Show Videostream Checkbox
 show_stream_var = tk.BooleanVar(value=bool(config["show_stream"]))
 show_stream_checkbox = Checkbutton(root, text="Show Video Stream", variable=show_stream_var)
 show_stream_checkbox.grid(row=8, column=3, pady=10, padx=10)
-show_stream_checkbox.config(command=toggle_save_button)
+show_stream_checkbox.config(command=update_save_button_state)
 
+# Record Plot Checkbox
 record_plot_var = tk.BooleanVar(value=bool(config["record_plot"]))
 record_plot_checkbox = Checkbutton(root, text="Record New Plot", variable=record_plot_var)
 record_plot_checkbox.grid(row=8, column=2, pady=10, padx=10)
-record_plot_checkbox.config(command=toggle_save_button)
+record_plot_checkbox.config(command=update_save_button_state)
 
+# Camera Zoom Slider
 zoom_slider_label = Label(root, text="Zoom Level:")
 zoom_slider_label.grid(row=9, column=0, padx=10, pady=10)
-
 zoom_slider = Scale(root, from_=1, to=2, resolution=0.01, orient=tk.HORIZONTAL, length=200)
 zoom_slider.set(1.0)  # Set the initial value
 zoom_slider.grid(row=9, column=1, padx=10, pady=10)
 zoom_slider.bind("<ButtonRelease-1>", on_slider_release)
+parsed_url = urlparse(config["source"])
+update_video_source_url(parsed_url)
+if parsed_url.hostname:
+    update_zoom_level(1.0)
 
+# Error Message
+error_label = Label(root, text="", fg="red")
+error_label.grid(row=10, column=0, columnspan=4)
+
+# Video Canvas
 video_frame = tk.Frame(root)
 video_frame.grid(row=11, column=0, columnspan=5, pady=10)
 canvas = tk.Canvas(video_frame)
 canvas.grid(row=0, column=0)
-#zoom_slider.config(command=lambda value: update_zoom_level(zoom_slider.get()))
 
-update_zoom_level(1.0)
 update_class_id_list()
-attachment_changed()
-
-
+update_mail_option()
 root.mainloop()
 
+ ########################################################################################## NOTES
 
-# fix auth , camera_url and compatibility for zoom
-# fix manual button
-# verbose toggle
+# 'source' for the Axis Camera I was using: rtsp://root:pass@192.168.1.190/axis-media/media.amp
