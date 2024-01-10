@@ -208,8 +208,8 @@ def run_object_detection():                                                     
                         executor.submit(send_email_wrapper, [manual_frames_to_save, None, mail_option, True])
                         email_flag = 2
                         manual_res_list.clear()
-                        manual_stop_button.config(state=tk.DISABLED)
-                        manual_start_button.config(state=tk.NORMAL)
+                        manual_stop_button.config(state=tk.DISABLED, bg="lightgray")
+                        manual_start_button.config(state=tk.NORMAL, bg="deepskyblue3")
                         messagebox.showerror("Error", f"Manual Video can maximum be {manual_video_max_len}")
 
                 if man_stop_but_press:                                                                                          # If the manual stop button has been pressed, stop video recording and send manual mail with video attachment
@@ -319,11 +319,11 @@ def is_save_needed():                                                           
         else:
             return False
     except ValueError as e:
-        error_label.config(text=str(e))
+        error_label.config(text=f"ATTENTION: {str(e)}")
         return False
 
 def update_save_button_state(event=None):                                                                                       # This function checks if any parameter has been changed by calling the is_save_needed() function. If changes are detected, the save_button can be clicked. Otherwise,  the button is disabled and cannot be clicked.
-    save_button['state'] = 'normal' if is_save_needed() else 'disabled'
+    save_button.config(state='normal', bg='goldenrod2') if is_save_needed() else save_button.config(state='disabled', bg='lightgray')
 
 
 def check_class_ids_vadility(class_ids_str, class_id_list):                                                                     # This function checks if the provided class IDs string can be converted into a list of integers. It also checks whether each integer is within the valid range for the given class_id_list.
@@ -491,26 +491,26 @@ def manual_start_button_pressed():                                              
     global man_start_but_press
     man_start_but_press = True                                                                                                  # global variable used in the run_object_detection() function to know when a manual action should be triggered (send  mail without/image attachment or start recording video).
     if mail_option_combobox.get() == "Mail with Video Attachment":                                                              # If the mail option is "Mail with Video Attachment", it enables the manual stop button and disables the manual start button after the manual start button is pressed
-        manual_stop_button.config(state=tk.NORMAL)
-        manual_start_button.config(state=tk.DISABLED)
+        manual_stop_button.config(state=tk.NORMAL, bg="deepskyblue3")
+        manual_start_button.config(state=tk.DISABLED, bg="lightgray")
 
 
 def manual_stop_button_pressed():
     
     global man_stop_but_press                                                                                                   # Callback function triggered when the manual stop button is pressed.
     man_stop_but_press = True                                                                                                   # global variable used in the run_object_detection() function to know when the manual video recording should be stopped and a mail with video attachment sent.
-    manual_stop_button.config(state=tk.DISABLED)
-    manual_start_button.config(state=tk.NORMAL)
+    manual_stop_button.config(state=tk.DISABLED, bg="lightgray")
+    manual_start_button.config(state=tk.NORMAL, bg="deepskyblue3")
 
 
 def start_object_detection():                                                                                                   # Callback function that starts the object detection process and is triggered when the start button is pressed
 
     global cap
     cap = cv2.VideoCapture(int(load_parameters()["source"]) if load_parameters()["source"].isdigit() else load_parameters()["source"])  # Initialize the cv2 video capture using the source specified in the parameters.
-    start_button.config(state=tk.DISABLED)
-    stop_button.config(state=tk.NORMAL)
-    manual_start_button.config(state=tk.NORMAL)
-    save_button.config(state=tk.DISABLED)
+    start_button.config(state=tk.DISABLED, bg="lightgray")
+    stop_button.config(state=tk.NORMAL, bg="red3")
+    manual_start_button.config(state=tk.NORMAL, bg="deepskyblue3")
+    save_button.config(state=tk.DISABLED, bg="lightgray")
     thread = threading.Thread(target=run_object_detection, name='run_object_detection')                                         # Start a new thread to run the live object detection process concurrently.
     thread.start()
 
@@ -519,9 +519,9 @@ def stop_object_detection():                                                    
 
     global cap
     cap.release() if cap is not None and cap.isOpened() else None                                                               # Release the cv2 video capture if it is still open and not None. 
-    start_button.config(state=tk.NORMAL)
-    stop_button.config(state=tk.DISABLED)
-    manual_start_button.config(state=tk.DISABLED)
+    start_button.config(state=tk.NORMAL, bg="green3")
+    stop_button.config(state=tk.DISABLED, bg="lightgray")
+    manual_start_button.config(state=tk.DISABLED, bg="lightgray")
 
     update_save_button_state()
     save_plot_data()                                                                                                            # As we only save the datapoints all x seconds in run_object_detection(), there will quite probably be some datapoints left in 'detected_class_ids_list, total_times_list, email_sent_flags' when stopping the programming that need to be added to plot_data.csv.
@@ -539,8 +539,8 @@ def load_parameters():                                                          
         return json.load(f)
 
 
-root = tk.Tk()
-root.title("Live Object Detection UI")
+root = tk.Tk()  
+root.title("Live Object Detection User Interface")
 style = ttk.Style()
 style.theme_use("clam")
 root.protocol("WM_DELETE_WINDOW", closing_window_handle)
@@ -638,27 +638,27 @@ listbox.config(yscrollcommand=scrollbar.set)
 scrollbar.config(command=listbox.yview)
 
 # Paramter Save Button
-save_button = Button(root, text="Save Parameters", command=save_parameters, state='disabled')
+save_button = Button(root, text="Save Parameters", command=save_parameters, state=tk.DISABLED, bg="lightgray", activebackground="goldenrod1")
 save_button.grid(row=9, column=3, columnspan=2, pady=20)
 
 # Program Start Button
-start_button = Button(root, text=" START ", command=start_object_detection, state=tk.NORMAL)
+start_button = Button(root, text=" START ", command=start_object_detection, state=tk.NORMAL, bg="green3", activebackground="green2")
 start_button.grid(row=9, column=2, pady=10, padx=10)
 
-# Program Stop Button
-stop_button = Button(root, text=" STOP  ", command=stop_object_detection, state=tk.DISABLED)
+# Program Stop Button   
+stop_button = Button(root, text=" STOP  ", command=stop_object_detection, state=tk.DISABLED, bg="lightgray", activebackground="red2")
 stop_button.grid(row=9, column=2, pady=10,  padx=(180,10))
 
 # Plot Button
-plot_button = Button(root, text="Show Plot", command=show_plot_data, state=tk.NORMAL)
+plot_button = Button(root, text="Show Plot", command=show_plot_data, state=tk.NORMAL, bg="bisque3", activebackground="bisque2")
 plot_button.grid(row=7, column=0, pady=10,  padx=10)
 
 # Manual Mail Button Left
-manual_start_button = Button(root, text="Start Video Recording Manually", command=manual_start_button_pressed, state=tk.DISABLED)
+manual_start_button = Button(root, text="Start Video Recording Manually", command=manual_start_button_pressed, state=tk.DISABLED, bg="lightgray", activebackground="deepskyblue2")
 manual_start_button.grid(row=9, column=0, padx=10, pady=10)
 
 # Manual Mail Button Right
-manual_stop_button = Button(root, text="Send Mail with Video", command=manual_stop_button_pressed, state=tk.DISABLED)
+manual_stop_button = Button(root, text="Send Mail with Video", command=manual_stop_button_pressed, state=tk.DISABLED, bg="lightgray", activebackground="deepskyblue2")
 manual_stop_button.grid(row=9, column=1, padx=10, pady=10)
 
 # Show Videostream Checkbox
