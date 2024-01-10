@@ -414,7 +414,7 @@ def update_mail_option(event=None):                                             
     labels =  [videolen_label, email_trigger_count_label, time_interval_label, mail_pause_label, class_id_label, mail_list_label]
     buttons = [manual_start_button, manual_stop_button]
 
-    labels[1].config(text="Nr. of Frames with Detection for Video Recording Start")                                             # Reset default configuration for widgets
+    labels[1].config(text="Nr. of Frames with Detection for Video Recording Start:")                                             # Reset default configuration for widgets
     buttons[0].config(text="Start Video Recording Manually")
     buttons[1].config(text="Send Mail with Video")
     for entry in entries:
@@ -433,14 +433,14 @@ def update_mail_option(event=None):                                             
             button.grid_remove()
     
     elif current_option == "Mail without Attachment":
-        labels[1].config(text="Nr. of Frames with Detection for Mail Trigger")
+        labels[1].config(text="Nr. of Frames with Detection for Mail Trigger:")
         labels[0].config(foreground="gray")
         entries[0].config(state="disabled")
         buttons[0].config(text="Send Mail Manually")
         buttons[1].grid_remove()
      
     elif current_option == "Mail with Image Attachment":
-        labels[1].config(text="Nr. of Frames with Detection for Image Snapshot")
+        labels[1].config(text="Nr. of Frames with Detection for Image Snapshot:")
         labels[0].config(foreground="gray")
         entries[0].config(state="disabled")
         buttons[0].config(text="Send Mail with Image Manually")
@@ -549,58 +549,58 @@ for row in range(root.grid_size()[1]):
     root.rowconfigure(row, min=45)
 config = load_parameters()
 
-# Confidence Level
-Label(root, text="Confidence Level:").grid(row=0, column=0, padx=10, pady=10)
-confidence_entry = Entry(root)
-confidence_entry.insert(0, config["confidence_level"])
-confidence_entry.grid(row=0, column=1, padx=10, pady=10)
-confidence_entry.bind("<KeyRelease>", update_save_button_state) 
-
-# Source
-Label(root, text="Videostream Source:").grid(row=1, column=0, padx=10, pady=10)
-source_entry = Entry(root)
-source_entry.insert(0, config["source"])
-source_entry.grid(row=1, column=1, padx=10, pady=10)
-source_entry.bind("<KeyRelease>", update_save_button_state)  
-
 #Attachment Option
-Label(root, text="Mail Options:").grid(row=2, column=0, padx=10, pady=10)
+Label(root, text="Mail Options:").grid(row=0, column=0, padx=10, pady=10)
 mail_option_combobox = Combobox(root, values=["No Mail", "Mail without Attachment", "Mail with Image Attachment", "Mail with Video Attachment"], state='readonly')
 mail_option_combobox.set(config["mail_option"])
-mail_option_combobox.grid(row=2, column=1, padx=10, pady=10)
+mail_option_combobox.grid(row=0, column=1, padx=10, pady=10)
 mail_option_combobox.bind("<<ComboboxSelected>>", update_mail_option)
 
 # Email Trigger Count
 email_trigger_count_label = Label(root, text="Number of Frames with Detection for Mail Trigger:")
-email_trigger_count_label.grid(row=3, column=0, padx=10, pady=10)
+email_trigger_count_label.grid(row=1, column=0, padx=10, pady=10)
 email_trigger_count_entry = Entry(root)
 email_trigger_count_entry.insert(0, config["email_trigger_count"])
-email_trigger_count_entry.grid(row=3, column=1, padx=10, pady=10)
+email_trigger_count_entry.grid(row=1, column=1, padx=10, pady=10)
 email_trigger_count_entry.bind("<KeyRelease>", update_save_button_state)  
 
 # Time Interval
 time_interval_label = Label(root, text="Time To be Detected Interval (sec):")
-time_interval_label.grid(row=4, column=0, padx=10, pady=10)
+time_interval_label.grid(row=2, column=0, padx=10, pady=10)
 time_interval_entry = Entry(root)
 time_interval_entry.insert(0, config["time_interval_for_enough_frame_sightings_in_sec"])
-time_interval_entry.grid(row=4, column=1, padx=10, pady=10)
+time_interval_entry.grid(row=2, column=1, padx=10, pady=10)
 time_interval_entry.bind("<KeyRelease>", update_save_button_state)  
 
 # Mail Pause
 mail_pause_label = Label(root, text="No Mail Sending Interval (sec):")
-mail_pause_label.grid(row=5, column=0, padx=10, pady=10)
+mail_pause_label.grid(row=3, column=0, padx=10, pady=10)
 mail_pause_entry = Entry(root)
 mail_pause_entry.insert(0, config["mail_pause_in_sec"])
-mail_pause_entry.grid(row=5, column=1, padx=10, pady=10)
+mail_pause_entry.grid(row=3, column=1, padx=10, pady=10)
 mail_pause_entry.bind("<KeyRelease>", update_save_button_state)  
 
 # Video Length
 videolen_label = Label(root, text="Video Length (sec):")
-videolen_label.grid(row=6, column=0, padx=10, pady=10)
+videolen_label.grid(row=4, column=0, padx=10, pady=10)
 videolen_entry = Entry(root)
 videolen_entry.insert(0, config["video_length"])
-videolen_entry.grid(row=6, column=1, padx=10, pady=10)
+videolen_entry.grid(row=4, column=1, padx=10, pady=10)
 videolen_entry.bind("<KeyRelease>", update_save_button_state)  
+
+# Confidence Level
+Label(root, text="Confidence Level:").grid(row=5, column=0, padx=10, pady=10)
+confidence_entry = Entry(root)
+confidence_entry.insert(0, config["confidence_level"])
+confidence_entry.grid(row=5, column=1, padx=10, pady=10)
+confidence_entry.bind("<KeyRelease>", update_save_button_state) 
+
+# Source
+Label(root, text="Videostream Source:").grid(row=6, column=0, padx=10, pady=10)
+source_entry = Entry(root)
+source_entry.insert(0, config["source"])
+source_entry.grid(row=6, column=1, padx=10, pady=10)
+source_entry.bind("<KeyRelease>", update_save_button_state)  
 
 # YOLO Model
 Label(root, text="YOLO Model:").grid(row=0, column=2, padx=10, pady=10)
