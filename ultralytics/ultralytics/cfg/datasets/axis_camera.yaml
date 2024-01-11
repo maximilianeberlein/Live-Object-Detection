@@ -1,6 +1,6 @@
-path: ../git/husky_alascom/OIDv6_ToolKit_Download_Open_Images_Support_Yolo_Format/OID/Dataset/
-train: train/Class1_Class2/images
-val: validation/Class1_Class2/images
+path: ../git/Live-Object-Detection/OIDv6_ToolKit_Download_Open_Images_Support_Yolo_Format/OID/Dataset/
+train: train/class1_class2/images
+val: validation/class1_class2/images
 test: #optional
 
 # Classes
